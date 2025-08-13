@@ -1,0 +1,108 @@
+import logging
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackContext
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+RISK_PROFILE, ASSETS, AMOUNTS = range(3)
+profiles = ["консервативный", "умеренный", "агрессивный"]
+assets = ["недвижимость", "акции", "криптовалюта"]
+recommendations = {
+    "консервативный": {"недвижимость": 0.7, "акции": 0.25, "криптовалюта": 0.05},
+    "умеренный": {"недвижимость": 0.5, "акции": 0.4, "криптовалюта": 0.1},
+    "агрессивный": {"недвижимость": 0.2, "акции": 0.5, "криптовалюта": 0.3}
+}
+
+def start(update: Update, context: CallbackContext) -> int:
+    reply_keyboard = [profiles]
+    update.message.reply_text(
+        "Выберите ваш риск-профиль:",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+    )
+    return RISK_PROFILE
+
+def risk_profile(update: Update, context: CallbackContext) -> int:
+    user_profile = update.message.text.lower()
+    if user_profile not in profiles:
+        update.message.reply_text("Пожалуйста, выберите корректный профиль из списка.")
+        return RISK_PROFILE
+        
+    context.user_data['risk_profile'] = user_profile
+    update.message.reply_text(
+        f"Профиль '{user_profile}' сохранен.\n"
+        "Введите ваши активы через запятую (недвижимость, акции, криптовалюта):"
+    )
+    return ASSETS
+
+def process_assets(update: Update, context: CallbackContext) -> int:
+    user_assets = [a.strip().lower() for a in update.message.text.split(',')]
+    valid_assets = [a for a in user_assets if a in assets]
+    
+    if not valid_assets:
+        update.message.reply_text("Пожалуйста, введите минимум один корректный актив.")
+        return ASSETS
+        
+    context.user_data['assets'] = valid_assets
+    update.message.reply_text(
+        f"Активы сохранены: {', '.join(valid_assets)}\n"
+        "Введите суммы вложений через запятую (в том же порядке):"
+    )
+    return AMOUNTS
+
+def process_amounts(update: Update, context: CallbackContext) -> int:
+    try:
+        amounts = [float(a.strip()) for a in update.message.text.split(',')]
+    except ValueError:
+        update.message.reply_text("Пожалуйста, введите числовые значения сумм.")
+        return AMOUNTS
+        
+    user_assets = context.user_data.get('assets', [])
+    if len(amounts) != len(user_assets):
+        update.message.reply_text("Количество сумм не совпадает с количеством активов.")
+        return AMOUNTS
+        
+    current_portfolio = dict(zip(user_assets, amounts))
+    total = sum(amounts)
+    risk = context.user_data['risk_profile']
+    
+    recommendation = recommendations[risk]
+    result = ["Рекомендации по перераспределению:"]
+    
+    for asset, percent in recommendation.items():
+        recommended = total * percent
+        current = current_portfolio.get(asset, 0)
+        diff = recommended - current
+        
+        if diff > 0:
+            result.append(f"Докупить {asset}: +{diff:.2f}")
+        elif diff < 0:
+            result.append(f"Продать {asset}: {diff:.2f}")
+    
+    update.message.reply_text('\n'.join(result))
+    return ConversationHandler.END
+
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text('Отменено.')
+    return ConversationHandler.END
+
+def main() -> None:
+    updater = Updater("YOUR_BOT_TOKEN")
+    dispatcher = updater.dispatcher
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            RISK_PROFILE: [MessageHandler(Filters.text & ~Filters.command, risk_profile)],
+            ASSETS: [MessageHandler(Filters.text & ~Filters.command, process_assets)],
+            AMOUNTS: [MessageHandler(Filters.text & ~Filters.command, process_amounts)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
+    dispatcher.add_handler(conv_handler)
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
