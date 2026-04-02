@@ -1,0 +1,116 @@
+import logging
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Состояния разговора
+RISK_PROFILE, ASSETS, AMOUNTS = range(3)  # Добавлено новое состояние
+profiles = ["консервативный", "умеренный", "агрессивный"]
+recommendations = {
+    "консервативный": {"недвижимость": 0.7, "акции": 0.25, "криптовалюта": 0.05},
+    "умеренный": {"недвижимость": 0.5, "акции": 0.4, "криптовалюта": 0.1},
+    "агрессивный": {"недвижимость": 0.2, "акции": 0.5, "криптовалюта": 0.3}
+}
+
+def start(update: Update, context) -> int:
+    update.message.reply_text(
+        "Введите ваш риск-профиль (консервативный/умеренный/агрессивный):"
+    )
+    return RISK_PROFILE  # Исправлено название состояния
+
+def get_risk_profile(update: Update, context) -> int:  # Переименовано для ясности
+    risk = update.message.text.lower()
+    if risk not in profiles:
+        update.message.reply_text("Ошибка! Введите корректный риск-профиль.")
+        return RISK_PROFILE
+    
+    context.user_data['risk'] = risk
+    update.message.reply_text(
+        "Введите активы через запятую (недвижимость, акции, криптовалюта):"
+    )
+    return ASSETS
+
+def get_assets(update: Update, context) -> int:
+    assets_input = [a.strip().lower() for a in update.message.text.split(',')]
+    if not assets_input:
+        update.message.reply_text("Ошибка! Введите активы.")
+        return ASSETS
+    
+    # Проверка допустимых активов
+    valid_assets = ["недвижимость", "акции", "криптовалюта"]
+    for asset in assets_input:
+        if asset not in valid_assets:
+            update.message.reply_text(f"Ошибка! Недопустимый актив: {asset}. Допустимые активы: недвижимость, акции, криптовалюта")
+            return ASSETS
+    
+    context.user_data['assets'] = assets_input
+    update.message.reply_text("Введите суммы через запятую:")
+    return AMOUNTS  # Переходим к новому состоянию
+
+def get_amounts(update: Update, context) -> int:  # Новая функция для обработки сумм
+    try:
+        amounts = [float(a.strip()) for a in update.message.text.split(',')]
+    except ValueError:
+        update.message.reply_text("Ошибка! Введите числа, разделенные запятыми.")
+        return AMOUNTS
+    
+    assets = context.user_data.get('assets', [])
+    if len(amounts) != len(assets):
+        update.message.reply_text(f"Ошибка! Количество сумм ({len(amounts)}) не совпадает с количеством активов ({len(assets)}).")
+        return AMOUNTS
+    
+    risk = context.user_data.get('risk')
+    if not risk:
+        update.message.reply_text("Ошибка! Не найден риск-профиль. Начните снова.")
+        return ConversationHandler.END
+    
+    total = sum(amounts)
+    if total <= 0:
+        update.message.reply_text("Ошибка! Сумма должна быть больше нуля.")
+        return AMOUNTS
+    
+    result = ["Рекомендации по вашему риск-профилю (" + risk + "):"]
+    current_allocation = dict(zip(assets, amounts))
+    
+    for asset, target_percent in recommendations[risk].items():
+        target_amount = total * target_percent
+        current_amount = current_allocation.get(asset, 0)
+        difference = target_amount - current_amount
+        
+        if difference > 0:
+            result.append(f"• Купить {asset}: +{difference:.2f}")
+        elif difference < 0:
+            result.append(f"• Продать {asset}: {difference:.2f}")
+        else:
+            result.append(f"• {asset}: оптимально")
+    
+    update.message.reply_text('\n'.join(result))
+    return ConversationHandler.END
+
+def cancel(update: Update, context) -> int:
+    update.message.reply_text('Диалог прерван.')
+    return ConversationHandler.END
+
+def main() -> None:
+    updater = Updater("YOUR_BOT_TOKEN")  # Замените на реальный токен
+    dispatcher = updater.dispatcher
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            RISK_PROFILE: [MessageHandler(Filters.text & ~Filters.command, get_risk_profile)],
+            ASSETS: [MessageHandler(Filters.text & ~Filters.command, get_assets)],
+            AMOUNTS: [MessageHandler(Filters.text & ~Filters.command, get_amounts)]  # Добавлен новый обработчик
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+    
+    dispatcher.add_handler(conv_handler)
+    logger.info("Бот запущен")
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()  # Исправлен вызов функции
